@@ -1,14 +1,14 @@
 [
   {
-    "label": "Arduino: Build (Zigbee ED)",
-    "command": "arduino-cli compile --fqbn esp32:esp32:dfrobot_beetle_esp32c6:PartitionScheme=zigbee,ZigbeeMode=ed,CDCOnBoot=cdc --build-path build/arduino ZigBeetleC6Sensor"
+    "label": "ESP-IDF: Build (Docker)",
+    "command": "docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project espressif/idf:v5.3 idf.py -B build/idf set-target esp32c6 build"
   },
   {
-    "label": "Arduino: Flash (Zigbee ED)",
-    "command": "arduino-cli upload --fqbn esp32:esp32:dfrobot_beetle_esp32c6:PartitionScheme=zigbee,ZigbeeMode=ed,CDCOnBoot=cdc -p /dev/ttyACM0 --input-dir build/arduino ZigBeetleC6Sensor"
+    "label": "ESP-IDF: Flash (Docker, /dev/ttyACM0)",
+    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 idf.py -B build/idf -p \"$PORT\" -b 115200 flash"
   },
   {
-    "label": "Arduino: Monitor (115200)",
-    "command": "arduino-cli monitor -p /dev/ttyACM0 -b esp32:esp32:dfrobot_beetle_esp32c6 -c baudrate=115200"
+    "label": "ESP-IDF: Monitor (Docker, /dev/ttyACM0)",
+    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -it -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 idf.py -B build/idf -p \"$PORT\" -b 115200 monitor"
   }
 ]

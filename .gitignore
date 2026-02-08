@@ -26,6 +26,9 @@ target/
 *.bin
 *.map
 build/
+managed_components/
+sdkconfig
+sdkconfig.old
 
 # Ignore .DS_Store file in mac
 **/.DS_Store
