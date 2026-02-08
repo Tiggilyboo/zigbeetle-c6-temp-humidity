@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Arduino: Build (Zigbee ED)",
+    "command": "arduino-cli compile --fqbn esp32:esp32:dfrobot_beetle_esp32c6:PartitionScheme=zigbee,ZigbeeMode=ed,CDCOnBoot=cdc --build-path build/arduino ZigBeetleC6Sensor"
+  },
+  {
+    "label": "Arduino: Flash (Zigbee ED)",
+    "command": "arduino-cli upload --fqbn esp32:esp32:dfrobot_beetle_esp32c6:PartitionScheme=zigbee,ZigbeeMode=ed,CDCOnBoot=cdc -p /dev/ttyACM0 --input-dir build/arduino ZigBeetleC6Sensor"
+  },
+  {
+    "label": "Arduino: Monitor (115200)",
+    "command": "arduino-cli monitor -p /dev/ttyACM0 -b esp32:esp32:dfrobot_beetle_esp32c6 -c baudrate=115200"
+  }
+]
