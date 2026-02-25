@@ -4,6 +4,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
@@ -14,8 +15,21 @@
 
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_common.h"
+#include "zcl/esp_zigbee_zcl_basic.h"
+#include "zcl/esp_zigbee_zcl_command.h"
+#include "lp_core/aht21b_defs.h"
 
 #define TAG "ZIGBEETLE"
+
+#if defined(CONFIG_DEBUG) && CONFIG_DEBUG
+#define ZB_LOGI(...) ESP_LOGI(TAG, __VA_ARGS__)
+#define ZB_LOGW(...) ESP_LOGW(TAG, __VA_ARGS__)
+#define ZB_DIAGI(...) ESP_LOGI(TAG, __VA_ARGS__)
+#else
+#define ZB_LOGI(...) do { } while (0)
+#define ZB_LOGW(...) do { } while (0)
+#define ZB_DIAGI(...) do { } while (0)
+#endif
 
 #define AHT_LP_SDA GPIO_NUM_6
 #define AHT_LP_SCL GPIO_NUM_7
@@ -37,6 +51,8 @@
 #define SAMPLE_NORMAL_S 15
 #define SAMPLE_SLOW_S 60
 #define MIN_VALID_SAMPLES_TO_REPORT 3
+#define AHT_BOOT_SETTLE_MS 50
+#define AHT_MEASUREMENT_WAIT_MS 90
 
 #define ESP_ZB_ZED_CONFIG() { \
     .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED, \
@@ -58,6 +74,8 @@ static bool s_have_report;
 static int32_t s_last_report_temp_centi;
 static uint32_t s_last_report_hum_centi;
 static uint32_t s_last_report_ms;
+static volatile bool s_zb_network_joined;
+static volatile uint32_t s_zb_join_seq;
 
 static uint32_t now_ms(void)
 {
@@ -108,6 +126,7 @@ static uint32_t choose_next_interval_s(int32_t temp_centi, uint32_t hum_centi)
 static esp_zb_cluster_list_t *create_clusters(void)
 {
     esp_zb_temperature_sensor_cfg_t cfg = ESP_ZB_DEFAULT_TEMPERATURE_SENSOR_CONFIG();
+    cfg.basic_cfg.power_source = ESP_ZB_ZCL_BASIC_POWER_SOURCE_BATTERY;
     cfg.temp_meas_cfg.min_value = -4000;
     cfg.temp_meas_cfg.max_value = 12500;
 
@@ -147,6 +166,24 @@ static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
     ESP_RETURN_ON_FALSE(esp_zb_bdb_start_top_level_commissioning(mode_mask) == ESP_OK, , TAG, "Failed to start commissioning");
 }
 
+static void send_one_shot_report(uint16_t cluster_id, uint16_t attr_id)
+{
+    esp_zb_zcl_report_attr_cmd_t report_cmd = {
+        .zcl_basic_cmd = {
+            .src_endpoint = HA_ENDPOINT,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT,
+        .clusterID = cluster_id,
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .attributeID = attr_id,
+    };
+    esp_err_t err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+    if (err != ESP_OK) {
+        ZB_LOGW("One-shot report failed (cluster=0x%04x attr=0x%04x): %s",
+                cluster_id, attr_id, esp_err_to_name(err));
+    }
+}
+
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 {
     uint32_t *p_sg = signal_struct->p_app_signal;
@@ -155,25 +192,33 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-        ESP_LOGI(TAG, "Zigbee stack initialized");
+        ZB_LOGI("Zigbee stack initialized");
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
         if (st == ESP_OK) {
-            ESP_LOGI(TAG, "Start network steering (factory_new=%d)", esp_zb_bdb_is_factory_new() ? 1 : 0);
+            ZB_LOGI("Start network steering (factory_new=%d)", esp_zb_bdb_is_factory_new() ? 1 : 0);
             esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
         }
         break;
     case ESP_ZB_BDB_SIGNAL_STEERING:
         if (st == ESP_OK) {
-            ESP_LOGI(TAG, "Joined Zigbee network");
+            ZB_LOGI("Joined Zigbee network");
+            s_zb_network_joined = true;
+            s_zb_join_seq++;
         } else {
-            ESP_LOGW(TAG, "Network steering failed, retrying");
+            ZB_LOGW("Network steering failed, retrying");
+            s_zb_network_joined = false;
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
                                    ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
         break;
+#ifdef ESP_ZB_COMMON_SIGNAL_CAN_SLEEP
+    case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
+        esp_zb_sleep_now();
+        break;
+#endif
     default:
         break;
     }
@@ -183,12 +228,14 @@ static void zigbee_task(void *arg)
 {
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
+    esp_zb_sleep_enable(true);
 
     esp_zb_ep_list_t *ep_list = create_endpoint();
     esp_zb_device_register(ep_list);
 
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     ESP_ERROR_CHECK(esp_zb_start(false));
+    esp_zb_set_node_descriptor_power_source(false);
     esp_zb_stack_main_loop();
 }
 
@@ -212,6 +259,78 @@ static void lp_core_start(void)
     ESP_ERROR_CHECK(ulp_lp_core_run(&cfg));
 }
 
+#if defined(CONFIG_DEBUG) && CONFIG_DEBUG
+static void hp_i2c_probe_aht(void)
+{
+    i2c_master_bus_handle_t bus = NULL;
+    i2c_master_dev_handle_t dev = NULL;
+
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = I2C_NUM_0,
+        .sda_io_num = AHT_LP_SDA,
+        .scl_io_num = AHT_LP_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+    if (err != ESP_OK) {
+        ZB_LOGW("HP I2C probe skipped: bus init failed (%s)", esp_err_to_name(err));
+        return;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = AHT21B_ADDR,
+        .scl_speed_hz = 100000,
+    };
+    err = i2c_master_bus_add_device(bus, &dev_cfg, &dev);
+    if (err != ESP_OK) {
+        ZB_LOGW("HP I2C probe failed: add device (%s)", esp_err_to_name(err));
+        (void)i2c_del_master_bus(bus);
+        return;
+    }
+
+    uint8_t init_cmd[3] = {0xBE, 0x08, 0x00};
+    uint8_t trig_cmd[3] = {0xAC, 0x33, 0x00};
+    uint8_t raw[7] = {0};
+
+    err = i2c_master_transmit(dev, init_cmd, sizeof(init_cmd), 100);
+    if (err != ESP_OK) {
+        ZB_LOGW("HP I2C probe init write failed (%s)", esp_err_to_name(err));
+        goto out;
+    }
+    vTaskDelay(pdMS_TO_TICKS(AHT_BOOT_SETTLE_MS));
+
+    err = i2c_master_transmit(dev, trig_cmd, sizeof(trig_cmd), 100);
+    if (err != ESP_OK) {
+        ZB_LOGW("HP I2C probe trigger write failed (%s)", esp_err_to_name(err));
+        goto out;
+    }
+    vTaskDelay(pdMS_TO_TICKS(AHT_MEASUREMENT_WAIT_MS));
+
+    err = i2c_master_receive(dev, raw, sizeof(raw), 100);
+    if (err != ESP_OK) {
+        ZB_LOGW("HP I2C probe read failed (%s)", esp_err_to_name(err));
+        goto out;
+    }
+
+    ZB_DIAGI("HP probe raw=%02x %02x %02x %02x %02x %02x %02x",
+             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]);
+    if (raw[1] == 0 && raw[2] == 0 && raw[3] == 0 && raw[4] == 0 && raw[5] == 0) {
+        ZB_LOGW("HP probe read all-zero payload; likely pull-up/wiring/power issue");
+    }
+
+out:
+    if (dev) {
+        (void)i2c_master_bus_rm_device(dev);
+    }
+    if (bus) {
+        (void)i2c_del_master_bus(bus);
+    }
+}
+#endif
+
 static void publish_measurement(int32_t temp_centi, uint32_t hum_centi)
 {
     int16_t zcl_temp = temp_centi_to_zcl(temp_centi);
@@ -230,15 +349,21 @@ static void publish_measurement(int32_t temp_centi, uint32_t hum_centi)
                                  ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
                                  &zcl_hum,
                                  false);
+    send_one_shot_report(ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                         ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID);
+    send_one_shot_report(ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+                         ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID);
     esp_zb_lock_release();
 
-    ESP_LOGI(TAG, "Report avg=%.2f C %.2f %%", temp_centi / 100.0f, hum_centi / 100.0f);
+    ZB_LOGI("Report avg=%.2f C %.2f %%", temp_centi / 100.0f, hum_centi / 100.0f);
 }
 
 static void monitor_task(void *arg)
 {
     uint32_t seen_seq = 0;
     uint32_t last_diag_ms = 0;
+    bool agg_reset_pending = false;
+    uint32_t seen_join_seq = 0;
 
     while (1) {
         uint32_t seq1 = 0;
@@ -254,10 +379,17 @@ static void monitor_task(void *arg)
             count = ulp_lp_sample_count;
             temp_sum = ulp_lp_temp_sum_centi;
             hum_sum = ulp_lp_hum_sum_centi;
-            last_temp = ulp_lp_last_temp_centi;
+            last_temp = (int32_t)ulp_lp_last_temp_centi;
             last_hum = ulp_lp_last_hum_centi;
             seq2 = ulp_lp_data_seq;
         } while (seq1 != seq2);
+
+        if (seen_join_seq != s_zb_join_seq) {
+            seen_join_seq = s_zb_join_seq;
+            s_have_report = false;
+            s_last_report_ms = 0;
+            ZB_LOGI("Join/rejoin detected, forcing first post-join report");
+        }
 
         if (seq1 != seen_seq) {
             uint32_t next_s = choose_next_interval_s(last_temp, last_hum);
@@ -276,13 +408,21 @@ static void monitor_task(void *arg)
                          abs_diff_u32(last_hum, s_last_report_hum_centi) >= HUM_DELTA_CENTI;
         }
 
-        if (count >= MIN_VALID_SAMPLES_TO_REPORT && (!s_have_report || heartbeat_due || change_due)) {
+        if (agg_reset_pending) {
+            agg_reset_pending = (ulp_lp_agg_reset_ack != ulp_lp_agg_reset_req);
+        }
+
+        uint32_t min_samples_to_report = s_have_report ? MIN_VALID_SAMPLES_TO_REPORT : 1U;
+        if (s_zb_network_joined &&
+            !agg_reset_pending &&
+            count >= min_samples_to_report &&
+            (!s_have_report || heartbeat_due || change_due)) {
             int32_t avg_temp = temp_sum / (int32_t)count;
             uint32_t avg_hum = hum_sum / count;
 
             if (avg_temp < -4000 || avg_temp > 8500 || avg_hum > 10000U) {
-                ESP_LOGW(TAG, "Reject invalid average: %.2f C %.2f %% (%lu samples)",
-                         avg_temp / 100.0f, avg_hum / 100.0f, (unsigned long)count);
+                ZB_LOGW("Reject invalid average: %.2f C %.2f %% (%lu samples)",
+                        avg_temp / 100.0f, avg_hum / 100.0f, (unsigned long)count);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 continue;
             }
@@ -294,19 +434,17 @@ static void monitor_task(void *arg)
             s_last_report_ms = now_ms();
             s_have_report = true;
 
-            ulp_lp_sample_count = 0;
-            ulp_lp_temp_sum_centi = 0;
-            ulp_lp_hum_sum_centi = 0;
+            ulp_lp_agg_reset_req = ulp_lp_agg_reset_req + 1;
+            agg_reset_pending = true;
         }
 
         uint32_t now = now_ms();
         if ((now - last_diag_ms) >= 5000U) {
-            ESP_LOGI(TAG,
-                     "LP diag: seq=%lu cnt=%lu interval=%lus last=%.2fC %.2f%% err=%lu i2c=%lu status=%lu zero=%lu crc=%lu range=%lu raw=%02lx %02lx %02lx %02lx %02lx %02lx %02lx",
+            ZB_DIAGI("LP diag: seq=%lu cnt=%lu interval=%lus last=%.2fC %.2f%% err=%lu i2c=%lu status=%lu zero=%lu crc=%lu range=%lu raw=%02lx %02lx %02lx %02lx %02lx %02lx %02lx",
                      (unsigned long)ulp_lp_data_seq,
                      (unsigned long)ulp_lp_sample_count,
                      (unsigned long)ulp_lp_sample_interval_s,
-                     ulp_lp_last_temp_centi / 100.0f,
+                     ((int32_t)ulp_lp_last_temp_centi) / 100.0f,
                      ulp_lp_last_hum_centi / 100.0f,
                      (unsigned long)ulp_lp_error_count,
                      (unsigned long)ulp_lp_fail_i2c_count,
@@ -343,7 +481,14 @@ void app_main(void)
     ulp_lp_temp_sum_centi = 0;
     ulp_lp_hum_sum_centi = 0;
     ulp_lp_data_seq = 0;
+    ulp_lp_agg_reset_req = 0;
+    ulp_lp_agg_reset_ack = 0;
+    s_zb_network_joined = false;
+    s_zb_join_seq = 0;
 
+#if defined(CONFIG_DEBUG) && CONFIG_DEBUG
+    hp_i2c_probe_aht();
+#endif
     lp_i2c_init();
     lp_core_start();
 

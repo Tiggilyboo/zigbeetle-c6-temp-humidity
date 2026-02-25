@@ -1,0 +1,10 @@
+menu "ZigBeetle Configuration"
+
+config DEBUG
+    bool "Enable diagnostic info logs"
+    default y
+    help
+        Enables optional informational diagnostics such as LP sensor counters
+        and raw HP probe bytes. Disable to reduce serial log noise.
+
+endmenu

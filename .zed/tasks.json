@@ -1,11 +1,15 @@
 [
   {
+    "label": "ESP-IDF: Fullclean (Docker)",
+    "command": "docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project espressif/idf:v5.3 idf.py -B build/idf fullclean"
+  },
+  {
     "label": "ESP-IDF: Build (Docker)",
-    "command": "docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project espressif/idf:v5.3 idf.py -B build/idf set-target esp32c6 build"
+    "command": "docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project espressif/idf:v5.3 bash -lc 'rm -f sdkconfig sdkconfig.old && idf.py -B build/idf -D SDKCONFIG_DEFAULTS=sdkconfig.defaults fullclean set-target esp32c6 reconfigure build'"
   },
   {
     "label": "ESP-IDF: Flash (Docker, /dev/ttyACM0)",
-    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 idf.py -B build/idf -p \"$PORT\" -b 115200 flash"
+    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 bash -lc 'rm -f sdkconfig sdkconfig.old && idf.py -B build/idf -D SDKCONFIG_DEFAULTS=sdkconfig.defaults -p '\"$PORT\"' -b 115200 fullclean set-target esp32c6 reconfigure flash'"
   },
   {
     "label": "ESP-IDF: Monitor (Docker, /dev/ttyACM0)",

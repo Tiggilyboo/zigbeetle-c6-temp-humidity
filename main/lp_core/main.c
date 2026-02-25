@@ -4,16 +4,9 @@
 #include "ulp_lp_core_i2c.h"
 #include "ulp_lp_core_lp_timer_shared.h"
 #include "ulp_lp_core_utils.h"
+#include "aht21b_defs.h"
 
 #define LP_I2C_NUM LP_I2C_NUM_0
-#define AHT21B_ADDR 0x38
-
-#define AHT21B_INIT_CMD 0xBE
-#define AHT21B_INIT_P1 0x08
-#define AHT21B_INIT_P2 0x00
-#define AHT21B_TRIG_CMD 0xAC
-#define AHT21B_TRIG_P1 0x33
-#define AHT21B_TRIG_P2 0x00
 
 #define POLL_DELAY_US 5000
 #define POLL_TIMEOUT_US 200000
@@ -41,6 +34,8 @@ volatile uint32_t lp_last_raw3 = 0;
 volatile uint32_t lp_last_raw4 = 0;
 volatile uint32_t lp_last_raw5 = 0;
 volatile uint32_t lp_last_raw6 = 0;
+volatile uint32_t lp_agg_reset_req = 0;
+volatile uint32_t lp_agg_reset_ack = 0;
 
 static bool aht_write3(uint8_t b0, uint8_t b1, uint8_t b2)
 {
@@ -125,8 +120,8 @@ static bool aht_read(int32_t *temp_centi, uint32_t *hum_centi)
         return false;
     }
 
-    uint32_t h = (raw_h * 10000U) / 1048576U;
-    int32_t t = (int32_t)((raw_t * 20000U) / 1048576U) - 5000;
+    uint32_t h = (uint32_t)(((uint64_t)raw_h * 10000ULL) / 1048576ULL);
+    int32_t t = (int32_t)(((int64_t)raw_t * 20000LL) / 1048576LL) - 5000;
     if (h > 10000U || t < -4000 || t > 8500) {
         lp_fail_range_count++;
         return false;
@@ -139,6 +134,13 @@ static bool aht_read(int32_t *temp_centi, uint32_t *hum_centi)
 
 int main(void)
 {
+    if (lp_agg_reset_req != lp_agg_reset_ack) {
+        lp_sample_count = 0;
+        lp_temp_sum_centi = 0;
+        lp_hum_sum_centi = 0;
+        lp_agg_reset_ack = lp_agg_reset_req;
+    }
+
     uint32_t interval_s = lp_sample_interval_s;
     if (interval_s == 0) {
         interval_s = 15;
