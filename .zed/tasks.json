@@ -9,10 +9,18 @@
   },
   {
     "label": "ESP-IDF: Flash (Docker, /dev/ttyACM0)",
-    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 bash -lc 'rm -f sdkconfig sdkconfig.old && idf.py -B build/idf -D SDKCONFIG_DEFAULTS=sdkconfig.defaults -p '\"$PORT\"' -b 115200 fullclean set-target esp32c6 reconfigure flash'"
+    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_* 2>/dev/null | head -n1); if [ -z \"$PORT\" ]; then PORT=/dev/ttyACM0; fi; [ -e \"$PORT\" ] || { echo \"No ESP serial port found (checked by-id and /dev/ttyACM0)\"; exit 1; }; TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 bash -lc 'rm -f sdkconfig sdkconfig.old && idf.py -B build/idf -D SDKCONFIG_DEFAULTS=sdkconfig.defaults -p '\"$PORT\"' -b 115200 fullclean set-target esp32c6 reconfigure flash'"
   },
   {
     "label": "ESP-IDF: Monitor (Docker, /dev/ttyACM0)",
-    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C:13:9E:CB:72:B4-if00); TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -it -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 idf.py -B build/idf -p \"$PORT\" -b 115200 monitor"
+    "command": "PORT=$(readlink -f /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_* 2>/dev/null | head -n1); if [ -z \"$PORT\" ]; then PORT=/dev/ttyACM0; fi; [ -e \"$PORT\" ] || { echo \"No ESP serial port found (checked by-id and /dev/ttyACM0)\"; exit 1; }; TTY_GID=$(stat -c %g \"$PORT\"); docker run --rm -it -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e IDF_GIT_SAFE_DIR=/project --device=\"$PORT\" --group-add $TTY_GID espressif/idf:v5.3 idf.py -B build/idf -p \"$PORT\" -b 115200 monitor"
+  },
+  {
+    "label": "ESP-Zigbee: Build OTA Tool Image (Docker)",
+    "command": "docker build -f docker/ota-builder.Dockerfile -t zigbeetle-ota:latest --build-arg ESP_ZB_SDK_REF=main ."
+  },
+  {
+    "label": "ESP-Zigbee: Build OTA File",
+    "command": "docker image inspect zigbeetle-ota:latest >/dev/null 2>&1 || { echo \"Missing image zigbeetle-ota:latest. Run task: ESP-Zigbee: Build OTA Tool Image (Docker)\"; exit 1; }; set -e; VERSION_FILE=${VERSION_FILE:-ota_version.txt}; [ -f \"$VERSION_FILE\" ] || echo \"0x00000002\" > \"$VERSION_FILE\"; VERSION=${VERSION:-$(cat \"$VERSION_FILE\")}; MANUF_ID=${MANUF_ID:-0x131B}; IMAGE_TYPE=${IMAGE_TYPE:-0xFFBF}; STACK_VER=${STACK_VER:-0x0002}; BIN=${BIN:-build/idf/zigbeetle_c6_sensor.bin}; OUT=${OUT:-build/ota/zigbeetle_${VERSION}.ota}; docker run --rm -v $PWD:/project -w /project -u $UID -e HOME=/tmp -e VERSION=\"$VERSION\" -e MANUF_ID=\"$MANUF_ID\" -e IMAGE_TYPE=\"$IMAGE_TYPE\" -e STACK_VER=\"$STACK_VER\" -e BIN=\"$BIN\" -e OUT=\"$OUT\" zigbeetle-ota:latest bash -lc 'set -e; mkdir -p build/ota; [ -f \"$BIN\" ] || { echo \"Firmware bin not found: $BIN\"; exit 1; }; python3 \"$ESP_ZB_SDK_PATH\"/tools/image_builder_tool/image_builder_tool.py -c \"$OUT\" -v \"$VERSION\" -m \"$MANUF_ID\" -i \"$IMAGE_TYPE\" -s \"$STACK_VER\" -f \"$BIN\"; echo \"Created OTA file: $OUT\"'; NEXT=$(printf '0x%08x' $((VERSION + 1))); echo \"$NEXT\" > \"$VERSION_FILE\"; echo \"Next OTA version: $NEXT\""
   }
 ]

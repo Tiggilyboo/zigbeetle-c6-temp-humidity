@@ -1,6 +1,6 @@
 idf_component_register(SRCS "zigbeetle_main.c"
                        INCLUDE_DIRS "."
-                       PRIV_REQUIRES driver nvs_flash ieee802154 ulp esp_timer
+                       PRIV_REQUIRES driver esp_adc nvs_flash ieee802154 ulp esp_timer
                                      espressif__esp-zigbee-lib
                                      espressif__esp-zboss-lib)
 

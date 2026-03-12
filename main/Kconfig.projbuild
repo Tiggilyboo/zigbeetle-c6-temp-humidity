@@ -1,8 +1,15 @@
 menu "ZigBeetle Configuration"
 
+config USE_104NT4
+    bool "Use 104NT-4 thermistor instead of AHT21B"
+    default y
+    help
+        When enabled, the firmware uses a 104NT-4 thermistor on ADC GPIO4
+        and disables the current AHT21B (ASAIR) LP-core I2C path.
+
 config DEBUG
     bool "Enable diagnostic info logs"
-    default y
+    default n
     help
         Enables optional informational diagnostics such as LP sensor counters
         and raw HP probe bytes. Disable to reduce serial log noise.
